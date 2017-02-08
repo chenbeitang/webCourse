@@ -1,0 +1,381 @@
+<?xml version = "1.0" encoding = "utf-8"?>
+<s:Group xmlns:fx="http://ns.adobe.com/mxml/2009"
+		 xmlns:s="library://ns.adobe.com/flex/spark"
+		 xmlns:mx="library://ns.adobe.com/flex/mx"
+		 xmlns:grg="http://grg.grgbanking.com/platform/"
+		 width="100%" height="100%" creationComplete="creationCompleteHandler(event)">
+	<fx:Script>
+		<![CDATA[			
+			import com.hurlant.crypto.Crypto;
+			import com.hurlant.crypto.hash.IHash;
+			import com.hurlant.util.Hex;
+			
+			import mx.core.FlexGlobals;
+			import mx.events.FlexEvent;
+			import mx.resources.ResourceBundle;
+			import mx.rpc.events.ResultEvent;
+			import mx.rpc.http.HTTPService;
+			import mx.validators.Validator;
+			
+			import platform.common.manager.Session;
+			import platform.common.manager.SessionManager;
+			import platform.common.util.InnerEventDataUtil;
+			import platform.common.util.JsonUtil;
+			import platform.common.util.MenuUtil;
+			import platform.common.util.PrivilegeUtil;
+			import platform.common.util.Resource;
+			import platform.common.util.ResourceUtil;
+			import platform.common.util.StringUtil;
+			import platform.common.util.SystemDataUtil;
+			import platform.constants.OperationConsts;
+			import platform.rpc.http.HttpConnection;
+			
+			[Bindable]
+			private var themeSource:Array=[
+				{label:"default",color:0x0b9dee,data: 'assets/skins/blue.swf',icon:Resource.ICON_THEME_BLUE}, 
+				{label:"green",color:0x40981e, data: 'assets/skins/green.swf',icon:Resource.ICON_THEME_GREEN},
+				{label:"red",color:0xe0682f, data: 'assets/skins/red.swf',icon:Resource.ICON_THEME_RED}];
+			
+			/**登录页加载完成处理*/
+			protected function creationCompleteHandler(event:FlexEvent):void{
+				var en_us:ResourceBundle = new ResourceBundle("en_US", "LoginForm");
+				en_us.content["login_username"] = "Username";
+				en_us.content["login_password"] = "Password";
+				en_us.content["login_login"] = "Login";
+				en_us.content["login_copyright"] = "Copyright © 2016 GRGBanking Equipment Co., Ltd.";
+				en_us.content["AccountNotExisted"] = "Account not existed !";
+				en_us.content["AccountDisabled"] = "Account is disabled !";
+				en_us.content["PasswordExpired"] = "Password expired !";
+				en_us.content["WrongPassword"] = "Wrong password ! {0}/{1}";
+				en_us.content["WrongPasswordMax"] = "Account is locked ! Please try it later({0}minutes) !";
+				en_us.content["AccountMaximumSession"] = "Account current session is Over limit !";
+				en_us.content["LoginError"] = "Login Error! Please contact administrator!";
+				en_us.content["LoginSuccess"] = "Login Success ! Loading data,Please wait a minute...";
+				en_us.content["tip_common_required"] = "This filed is required.";
+				
+				var zh_cn:ResourceBundle = new ResourceBundle("zh_CN", "LoginForm");		
+				zh_cn.content["login_username"] = "用户名称";
+				zh_cn.content["login_password"] = "用户密码";
+				zh_cn.content["login_login"] = "登录";
+				zh_cn.content["login_copyright"] = "Copyright © 2016 广州广电运通金融电子股份有限公司";
+				zh_cn.content["AccountNotExisted"] = "账号不存在!";
+				zh_cn.content["AccountDisabled"] = "帐号不可用!";
+				zh_cn.content["PasswordExpired"] = "密码过期!";
+				zh_cn.content["WrongPassword"] = "密码错误! {0}/{1}";
+				zh_cn.content["WrongPasswordMax"] = "密码错误次数过多!请{0}分钟后再试!";
+				zh_cn.content["AccountMaximumSession"] = "账号当前登录数已达最大!";
+				zh_cn.content["LoginError"] = "登录错误!请联系管理员!";
+				zh_cn.content["LoginSuccess"] = "登录成功！加载数据,请稍候...";
+				zh_cn.content["tip_common_required"] = "该字段为必填字段。";
+				resourceManager.addResourceBundle(en_us);
+				resourceManager.addResourceBundle(zh_cn);
+				resourceManager.update();
+				loadStyleAndLanuage();
+				checkServerSession();
+			}
+			
+			/**检查服务器是否存在session ,存在则直接登录*/
+			protected function checkServerSession():void{
+				var checkSession:HttpConnection = new HttpConnection("userLogin/checkSession",false);
+				checkSession.addEventListener(ResultEvent.RESULT, function(event:ResultEvent):void{
+					var jsonResult:Object=JsonUtil.decode(StringUtil.trim(event.result.toString()));
+					if (jsonResult.resultCode ==OperationConsts.ACTION_RESULT_SUCCESS){
+						getUserDataResult(jsonResult.data);
+					}
+				});
+				checkSession.send(JsonUtil.encode({}));
+			}
+			public function isValid():Boolean
+			{   
+				var validatorResults:Array=Validator.validateAll(validators);
+				return (validatorResults.length==0);
+			}
+			/**登录开始*/
+			protected function loginHandler():void{
+				
+				if(isValid())
+				{
+					erroTip.text = "";
+					
+					var https:HttpConnection = new HttpConnection("");
+					https.url = "../j_spring_security_check.html";
+					https.contentType= HTTPService.CONTENT_TYPE_FORM;
+					
+					// crypto the username and password
+					var userName:String = encodeUserAccount(username.text);
+					//第一次对密码进行加密
+					var hash:IHash = Crypto.getHash("md5"); 
+					var md5Data:ByteArray = Hex.toArray(Hex.fromString(userpwd.text)); 
+					var passWord1:String = Hex.fromArray(hash.hash(md5Data));
+					//第二次对密码进行加密 
+					var md5Data2:ByteArray =Hex.toArray(Hex.fromString(passWord1));
+					var passWord2:String = Hex.fromArray(hash.hash(md5Data2));
+					
+					//prepare the param request
+					var request:Object = {};		
+					request["j_username"] = userName;
+					request["j_password"] = passWord2;
+					trace("Index PassWord strEncode1 :"+ passWord1 + " ------:"+ passWord2);	
+					https.addEventListener(ResultEvent.RESULT, httpServiceResultHandler);
+					https.send(request);
+		      	}
+			}
+			
+			/**登录返回处理*/
+			private function httpServiceResultHandler(event:ResultEvent):void{
+				var result:Object = JsonUtil.decode(StringUtil.trim(event.result.toString()));
+				if (result.resultType==11){
+					erroTip.text = resourceManager.getString('LoginForm','LoginSuccess');
+					var user:Object=result.data;
+					user.language=this.lstLanguage.selectedItem.data;	
+					//get system init data							
+					new HttpConnection("loginData/getUserData").sendData(user,getUserDataResult);
+				}else{
+					var message :String = String(result.resultMsg);
+					var errorMsg :String  = "";
+					var loginMessage:Object = result.data;
+					if("WrongPassword" == message){//密码错误
+						errorMsg = resourceManager.getString('LoginForm',message,[loginMessage["passwordFailCount"],loginMessage["maxLoginFailCount"]]);
+					}else if("WrongPasswordMax" == message){ //密码错误次数过多
+						errorMsg = resourceManager.getString('LoginForm',message,[loginMessage["loginFailLockTime"]]);
+					}else{
+						errorMsg = resourceManager.getString('LoginForm',result.resultMsg);
+					}
+					erroTip.text= errorMsg ? errorMsg : message;
+				}		
+			}
+			
+			/**获取用户数据返回处理*/
+			public function getUserDataResult(data:Object):void{
+				//save the session data
+				var user:Object = data.user;
+				var session:Session=new Session();
+				session.userId=user.id;
+				session.userAccount=user.account;
+				session.userDeptId=user.deptId;
+				session.userName=user.name;
+				session.language=user.language;
+				session.createDate= new Date;
+				session.userInfo = user;
+				SessionManager.setSession(session);
+				
+				//系统登录成功获取所需数据放在缓存中，数据改变时再重新获取相关的数据！
+				ResourceUtil.setMap(data.languages); 
+				PrivilegeUtil.setMap(data.privileges);
+				MenuUtil.setMenus(data.menus);
+				SystemDataUtil.setMap(data.datas);
+				InnerEventDataUtil.setMap(data.events);
+				erroTip.text= "";
+				this.parentDocument.currentState="mainState";
+			}
+			
+			
+			/**将用户名进行简单的加密*/
+			public function encodeUserAccount(account:String):String{
+				var code:int = 2016;
+				var encodeStr:String = "";
+				for(var i:int =0;i < account.length; i++){  
+					encodeStr += String.fromCharCode(account.charCodeAt(i) ^ code);
+				}  
+				return encodeStr;
+			}
+			[Bindable]
+			private var LatestTheme:String;
+			[Bindable]
+			private var LatestLanuage:String;
+			private function themeChangeHandler(event:Event):void
+			{				
+				var result:String=cbbTheme.selectedItem.data;
+				themeHandler(result);
+			}
+			private function themeHandler(theme:String):void
+			{
+				var styleManager:IStyleManager2 = FlexGlobals.topLevelApplication.styleManager;
+				if (theme != "")
+				{
+					styleManager.unloadStyleDeclarations(LatestTheme, false);
+					styleManager.loadStyleDeclarations(theme, true);
+					LatestTheme=theme;
+				}
+				else
+				{ 
+					styleManager.unloadStyleDeclarations(LatestTheme, true);
+					LatestTheme=theme;
+				}
+				var cssData:SharedObject=SharedObject.getLocal("LatestTheme");
+				cssData.data.cssName=theme;
+				cssData.flush();
+			}
+			/**语言选择改变处理*/
+			private function languageChangeHandler():void {
+				var lang:String = String(lstLanguage.selectedItem.data);
+				resourceManager.localeChain = [lang];  
+				//set to cookies
+				var lanuageData:SharedObject=SharedObject.getLocal("LatestLanuage");
+				lanuageData.data.LanuageName=lang;
+				lanuageData.flush();
+				
+			}
+			private function loadStyleAndLanuage():void
+			{
+				//style Name
+				var cssData:SharedObject=SharedObject.getLocal("LatestTheme");
+				LatestTheme=cssData.data.cssName;
+				
+				//lanuage Name
+				var lanuageData:SharedObject=SharedObject.getLocal("LatestLanuage");
+				LatestLanuage=lanuageData.data.LanuageName;
+				if (StringUtil.isNotNullOrEmpty(LatestTheme))
+				{ 
+					switch (LatestTheme)
+					{
+						case 'assets/skins/blue.swf':
+							cbbTheme.selectedIndex=0;
+							break;
+						case 'assets/skins/green.swf':
+							cbbTheme.selectedIndex=1;
+							break;
+						case 'assets/skins/red.swf':
+							cbbTheme.selectedIndex=2;
+							break;
+						default:
+							cbbTheme.selectedIndex=0;
+							break;
+					}					
+				}
+				else
+				{   
+					LatestTheme="assets/skins/blue.swf";
+					cbbTheme.selectedIndex=0;					
+				}	
+				//set Lanuage
+				if (StringUtil.isNotNullOrEmpty(LatestLanuage))
+				{
+					resourceManager.localeChain = [LatestLanuage];  
+					
+					switch (LatestLanuage)
+					{
+						case 'en_US':
+							lstLanguage.selectedIndex=0;
+							break;
+						case 'zh_CN':
+							lstLanguage.selectedIndex=1;
+							break;
+						default:
+							cbbTheme.selectedIndex=0;
+							break;
+					}		
+				}
+				else
+				{
+					LatestLanuage="en_US";
+					lstLanguage.selectedIndex=0;
+				}
+			}
+			
+		]]>
+	</fx:Script>
+	<fx:Declarations>
+		<fx:Array id="validators">
+			<mx:StringValidator source="{username}" requiredFieldError="{resourceManager.getString('LoginForm','tip_common_required')}"  property="text" required="true"/>
+			<mx:StringValidator source="{userpwd}"  requiredFieldError="{resourceManager.getString('LoginForm','tip_common_required')}"  property="text" required="true"/>
+		</fx:Array>
+	</fx:Declarations>
+	<s:layout>
+		<s:VerticalLayout horizontalAlign="center"/>
+	</s:layout>
+
+	<s:VGroup width="100%" height="100%" horizontalAlign="center" verticalAlign="middle">
+		<s:VGroup id="loginPanel" width="360" height="350" gap="0" horizontalAlign="center">
+			
+			<s:BorderContainer styleName="Login_Portrait">	
+				<s:Image top="-3" width="128" height="128" smooth="true"
+						 source="@Embed(source='assets/images/bg/icon.login.portal.png')"/>
+			</s:BorderContainer>	
+			<s:VGroup height="100%" gap="0" horizontalAlign="center" paddingBottom="0"
+					  paddingLeft="0" paddingRight="0" paddingTop="0" verticalAlign="middle">
+				<s:BorderContainer width="360" height="100%" backgroundAlpha="0"
+								   borderVisible="false"> 
+					<s:layout>
+						<s:VerticalLayout gap="0" paddingBottom="0" paddingLeft="50"
+										  paddingRight="50" verticalAlign="top"/>
+					</s:layout>
+					<s:BorderContainer visible="{StringUtil.isNotNullOrEmpty(erroTip.text)}"
+									   width="100%" height="25"
+									   backgroundImage="@Embed(source='assets/images/icons/login_errorbg.png')"
+									   borderVisible="false">
+						<s:layout>
+							<s:HorizontalLayout gap="0" paddingLeft="5" verticalAlign="middle"/>
+						</s:layout>
+						<mx:Image width="15"
+								  source="@Embed(source='assets/images/icons/login_tip.png')"/>
+						<mx:Text id="erroTip" visible="true" width="225" height="20" color="#6C6B63"
+								 fontFamily="Arial" fontSize="12" fontWeight="bold" textAlign="left"/>
+					</s:BorderContainer>
+					<s:Spacer height="10"/>
+					<grg:Form id="loginForm"  width="100%" height="100%" textAlign="left">
+						<grg:layout>
+							<s:FormLayout gap="-10" horizontalAlign="left" paddingLeft="-130"
+										  paddingRight="0" paddingTop="-15"/>
+						</grg:layout>
+						<grg:FormItem  width="100%">
+							<grg:TextInput id="username" width="230" height="36"
+										   prompt="{resourceManager.getString('LoginForm','login_username')}"
+										   styleName="LoginUsername" /> <!--text="admin" text="admin123"-->
+						</grg:FormItem>
+						<grg:FormItem width="100%">
+							<grg:TextInput id="userpwd" width="230" height="36"
+										   displayAsPassword="true"
+										   prompt="{resourceManager.getString('LoginForm','login_password')}"
+										   styleName="LoginPassword" enter="loginHandler()" />
+						</grg:FormItem>
+						<s:HGroup width="100%" gap="5" paddingLeft="115" paddingTop="10">
+							<grg:List id="lstLanguage" height="100%" borderVisible="false"
+									buttonMode="true" change="languageChangeHandler()"
+									contentBackgroundAlpha="0" styleName="loginLanguageFlag"
+									itemRenderer="com.grgbanking.itemRenderers.login.LoginFlagItemRenderer"
+									requireSelection="true">
+								<grg:dataProvider>
+									<mx:ArrayList>
+										<fx:Object label="English" data="en_US"/>
+										<fx:Object label="中文" data="zh_CN"/>										
+									</mx:ArrayList>
+								</grg:dataProvider>
+								<grg:layout>
+									<s:HorizontalLayout gap="5" paddingLeft="19"/>
+								</grg:layout>
+							</grg:List>
+							<s:Button id="submitLogin" width="134" height="35"
+									  label="{resourceManager.getString('LoginForm','login_login')}"
+									  click="loginHandler()" color="#ffffff" cornerRadius="3"
+									  styleName="LoginButton"   />
+						</s:HGroup>
+						
+					</grg:Form>
+				</s:BorderContainer>
+			</s:VGroup>	
+			
+		</s:VGroup>
+		<mx:HBox paddingTop="20">
+			<s:List  contentBackgroundAlpha="0"  id="cbbTheme" height="100%" borderVisible="false" buttonMode="true"
+					   dataProvider="{new ArrayList(themeSource)}"
+					  change="themeChangeHandler(event)"
+					  itemRenderer="com.grgbanking.itemRenderers.login.ThemeItemRenderer"
+					  requireSelection="true">
+				<s:layout>
+					<s:HorizontalLayout gap="5" horizontalAlign="center"/>
+				</s:layout>
+			</s:List>
+		</mx:HBox>
+	</s:VGroup>
+	<mx:VBox width="100%" height="30" verticalAlign="middle">
+		<s:Label width="100%" color="#333333" fontSize="12"
+				 text="{resourceManager.getString('LoginForm','login_copyright')}"
+				 textAlign="center">
+			<s:filters>
+				<s:DropShadowFilter angle="90" blurX="2" blurY="2" color="#f4f4f4" distance="1"/>
+			</s:filters>
+		</s:Label>
+	</mx:VBox>
+	
+</s:Group>
